@@ -1,0 +1,3 @@
+[submodule "non-master-node"]
+	path = non-master-node
+	url = https://github.com/threadbatteryslave6996ohio-coder/telegraf-setup-playbook.git
