@@ -19,28 +19,55 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_DIR
-readonly INVENTORY="${REPO_DIR}/non-master-node/inventory.ini"
+
+RECREATE=false
+ENV_NAME=stg
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --recreate)  RECREATE=true ;;
+    --env)       ENV_NAME="${2:?--env needs a value}"; shift ;;
+    --env=*)     ENV_NAME="${1#*=}" ;;
+    *) printf 'usage: %s [--env <name>] [--recreate]\n' "$0" >&2; exit 2 ;;
+  esac
+  shift
+done
+readonly RECREATE ENV_NAME
+
+readonly INVENTORY_DIR="${REPO_DIR}/non-master-node/inventories/${ENV_NAME}"
+readonly INVENTORY="${INVENTORY_DIR}/hosts.ini"
 
 # --- configuration ----------------------------------------------------------
 # Each VM is "name:ip:mac:cloud-init user:vcpus:memory-MiB". The MACs are fixed
 # so the DHCP reservations below always hand back the same address, which is
 # what lets the inventory be written before the guests have booted.
-readonly VMS=(
-  "control-stg:192.168.123.234:52:54:00:c8:7d:b9:controlstg:2:4096"
-  "app-stg:192.168.123.127:52:54:00:44:1b:71:appstg:2:4096"
-)
-
-# Which VM hosts the control plane. Must match a name above.
-readonly CONTROL_VM="control-stg"
+#
+# Only the staging guests are defined here, because only they were created by
+# this script. The production guests (control-vm, arch-nested) predate it and
+# were built by hand, so provisioning an env with no definitions below would
+# be a no-op that still overwrote its inventory -- refuse instead.
+case "$ENV_NAME" in
+  stg)
+    VMS=(
+      "control-stg:192.168.123.234:52:54:00:c8:7d:b9:controlstg:2:4096"
+      "app-stg:192.168.123.127:52:54:00:44:1b:71:appstg:2:4096"
+    )
+    # Which VM hosts the control plane. Must match a name above.
+    CONTROL_VM="control-stg"
+    ;;
+  *)
+    printf 'error: no VM definitions for env "%s".\n' "$ENV_NAME" >&2
+    printf 'Add a case block above, or manage that environment by editing\n' >&2
+    printf '%s by hand.\n' "${INVENTORY}" >&2
+    exit 2
+    ;;
+esac
+readonly VMS CONTROL_VM
 
 readonly LIBVIRT_NET="${LIBVIRT_NET:-default}"
 readonly IMAGE_DIR="${IMAGE_DIR:-/var/lib/libvirt/images}"
 readonly BASE_IMAGE="${BASE_IMAGE:-${IMAGE_DIR}/archlinux-cloudimg.qcow2}"
 readonly DISK_SIZE="${DISK_SIZE:-20G}"
-readonly SSH_KEY="${SSH_KEY:-${HOME}/.ssh/ansible-stg}"
-
-RECREATE=false
-[[ "${1:-}" == "--recreate" ]] && RECREATE=true
+readonly SSH_KEY="${SSH_KEY:-${HOME}/.ssh/ansible-${ENV_NAME}}"
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m %s\n' "$*" >&2; }
@@ -210,6 +237,7 @@ wait_for_ssh() {
 # Written from the definitions above, so it always matches what was built.
 write_inventory() {
   log "writing ${INVENTORY}"
+  mkdir -p "${INVENTORY_DIR}/group_vars/all"
   local control_ip=""
 
   {
@@ -255,13 +283,14 @@ ansible_user=ansible
 EOF
   } >"$INVENTORY"
 
-  # The agents ship to the control plane, so its address has to reach the vars
-  # too. Everything else in vars/ is the operator's to fill in.
-  local common="${REPO_DIR}/non-master-node/vars/common.yml"
+  # The agents ship to the control plane, so its address has to reach this
+  # environment's vars too. Everything else in group_vars/all/ is the
+  # operator's to fill in.
+  local common="${INVENTORY_DIR}/group_vars/all/common.yml"
   if [[ -f "$common" ]] && [[ -n "$control_ip" ]]; then
     if grep -q '^control_plane_host:' "$common"; then
       sed -i "s|^control_plane_host:.*|control_plane_host: \"${control_ip}\"|" "$common"
-      log "set control_plane_host=${control_ip} in vars/common.yml"
+      log "set control_plane_host=${control_ip} in inventories/${ENV_NAME}/group_vars/all/common.yml"
     fi
   fi
 }
@@ -287,22 +316,22 @@ main() {
   cat <<EOF
 
   cd ${REPO_DIR}/non-master-node
-  cp vars/common.yml.example  vars/common.yml     # if not already done
-  cp vars/arch.yml.example    vars/arch.yml
-  cp vars/control.yml.example vars/control.yml
-  cp vars/secrets.yml.example vars/secrets.yml    # then fill in the secrets
+
+  # this env's variables, if the directory is new (secrets need filling in)
+  cp -n inventories/example/group_vars/all/*.yml \\
+        inventories/${ENV_NAME}/group_vars/all/
 
   # stage 1, once, as the cloud-init user (per host)
 EOF
   for spec in "${VMS[@]}"; do
-    printf '  ansible-playbook bootstrap/arch/bootstrap-arch.yml --limit %s -e ansible_user=%s\n' \
-      "$(vm_field "$spec" name)" "$(vm_field "$spec" user)"
+    printf '  ansible-playbook -i inventories/%s bootstrap/arch/bootstrap-arch.yml --limit %s -e ansible_user=%s\n' \
+      "$ENV_NAME" "$(vm_field "$spec" name)" "$(vm_field "$spec" user)"
   done
   cat <<EOF
 
   # stage 2, as the ansible user
-  ansible-playbook site/arch/site-arch.yml
-  ansible-playbook site/control/site-control.yml
+  ansible-playbook -i inventories/${ENV_NAME} site/arch/site-arch.yml
+  ansible-playbook -i inventories/${ENV_NAME} site/control/site-control.yml
 
 EOF
   return $failed

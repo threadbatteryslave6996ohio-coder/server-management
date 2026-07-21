@@ -19,16 +19,16 @@ Clone with submodules, provision the VMs, run the playbooks:
 git clone --recurse-submodules <this repo>
 cd server-management
 
-# 1. create the VMs and generate the inventory
-./provision-vms.sh
+# 1. create the VMs and generate the staging inventory
+./provision-vms.sh                  # --env <name> for another environment
 
-# 2. fill in configuration and secrets
+# 2. fill in that environment's configuration and secrets
 cd non-master-node
 ansible-galaxy collection install -r requirements.yml
-cp vars/common.yml.example  vars/common.yml     # control_plane_host is set by the script
-cp vars/arch.yml.example    vars/arch.yml       # set ansible_admin_authorized_key
-cp vars/control.yml.example vars/control.yml    # set control_repo_owner
-cp vars/secrets.yml.example vars/secrets.yml    # set the Splunk/Grafana secrets
+$EDITOR inventories/stg/group_vars/all/arch.yml      # ansible_admin_authorized_key
+$EDITOR inventories/stg/group_vars/all/control.yml   # control_repo_owner
+$EDITOR inventories/stg/group_vars/all/secrets.yml   # Splunk/Grafana secrets
+                                    # control_plane_host is set by the script
 
 # 3. stage 1 -- create the `ansible` admin account, once per host,
 #    connecting as the cloud-init user
@@ -38,6 +38,9 @@ ansible-playbook bootstrap/arch/bootstrap-arch.yml --limit app-stg     -e ansibl
 # 4. stage 2 -- install the agents everywhere, then bring up the control plane
 ansible-playbook site/arch/site-arch.yml
 ansible-playbook site/control/site-control.yml
+
+# later: pull new control-server code and restart, nothing else
+ansible-playbook site/control/update-setup.yml
 ```
 
 That is the whole flow. When it finishes, `http://<control-plane>/grafana/`
@@ -54,19 +57,24 @@ interrupted by a reboot picks up cleanly on the next invocation.
 ## Provisioning script
 
 `provision-vms.sh` creates the guests on the local libvirt host and writes
-`non-master-node/inventory.ini` from the same definitions it builds them with,
-so the inventory always matches reality.
+`non-master-node/inventories/<env>/hosts.ini` from the same definitions it
+builds them with, so the inventory always matches reality.
 
 ```bash
 ./provision-vms.sh              # create anything missing, leave the rest alone
 ./provision-vms.sh --recreate   # destroy and rebuild both guests from scratch
+./provision-vms.sh --env stg    # which environment to build (default: stg)
 ```
 
+Only `stg` has VM definitions, because only the staging guests were created by
+this script. Asking for another environment fails rather than overwriting its
+inventory with an empty one.
+
 It pins a DHCP reservation per guest, so addresses are known before the guests
-boot, generates an SSH keypair at `~/.ssh/ansible-stg` if one does not exist,
-and writes `control_plane_host` into `vars/common.yml` so the agents know where
-to ship. The VM list, sizes and addresses are the `VMS` array at the top of the
-script.
+boot, generates an SSH keypair at `~/.ssh/ansible-<env>` if one does not exist,
+and writes `control_plane_host` into that environment's
+`group_vars/all/common.yml` so the agents know where to ship. The VM list,
+sizes and addresses are the `VMS` array at the top of the script.
 
 Requires `virsh`, `virt-install`, `qemu-img` and `xorriso`, plus an Arch cloud
 image at `/var/lib/libvirt/images/archlinux-cloudimg.qcow2` (override with
