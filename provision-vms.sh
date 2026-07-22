@@ -48,8 +48,8 @@ readonly INVENTORY="${INVENTORY_DIR}/hosts.ini"
 case "$ENV_NAME" in
   stg)
     VMS=(
-      "control-stg:192.168.123.234:52:54:00:c8:7d:b9:controlstg:2:4096"
-      "app-stg:192.168.123.127:52:54:00:44:1b:71:appstg:2:4096"
+      "control-stg:192.168.123.234:52:54:00:c8:7d:b9:controlstg:3:4096"
+      "app-stg:192.168.123.127:52:54:00:44:1b:71:appstg:3:4096"
     )
     # Which VM hosts the control plane. Must match a name above.
     CONTROL_VM="control-stg"
